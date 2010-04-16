@@ -18,6 +18,8 @@ NAME=scribe
 DESC=scribe
 USER=scribe
 
+export CLASSPATH=/usr/lib/hadoop-0.20/hadoop-0.20.2+228-core.jar:/usr/share/java/commons-logging.jar
+
 test -x $DAEMON || exit 0
 
 LOGFILE=/var/log/scribe.log
