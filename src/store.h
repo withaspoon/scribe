@@ -138,6 +138,8 @@ class FileStoreBase : public Store {
   std::string makeBaseFilename(struct tm* creation_time);
   std::string makeFullFilename(int suffix, struct tm* creation_time,
                                bool use_full_path = true);
+  boost::filesystem::path buildFullPathWithFormat(struct tm* creation_time);
+  std::string valueForFormatKey(const std::string & aKey, struct tm* creation_time);
   std::string makeBaseSymlink();
   std::string makeFullSymlink();
   int  findOldestFile(const std::string& base_filename);
@@ -145,9 +147,11 @@ class FileStoreBase : public Store {
   int  getFileSuffix(const std::string& filename,
                      const std::string& base_filename);
   void setHostNameSubDir();
+  std::string getHostname();
 
   // Configuration
   std::string baseFilePath;
+  std::string filePathFormat;
   std::string subDirectory;
   std::string filePath;
   std::string baseFileName;
@@ -199,6 +203,7 @@ class FileStore : public FileStoreBase {
   void configure(pStoreConf configuration);
   void close();
   void flush();
+  bool recursivelyCreateDirectories(boost::filesystem::path path);
 
   // Each read does its own open and close and gets the whole file.
   // This is separate from the write file, and not really a consistent
