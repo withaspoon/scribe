@@ -48,16 +48,12 @@ clean:
 
 	# Add here commands to clean up after the build process.
 	[ ! -f Makefile ] || $(MAKE) distclean
-<<<<<<< HEAD:debian/rules
 	rm -f config.sub config.guess \
 	Makefile.in \
 	aclocal.m4 \
 	configure \
 	lib/py/Makefile.in \
 	src/Makefile.in
-=======
-	rm -f config.sub config.guess
->>>>>>> b88a7f610804428a28f2dde1fa3662ba00c2718a:debian/rules
 
 	dh_clean 
 
