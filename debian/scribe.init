@@ -18,8 +18,11 @@ NAME=scribe
 DESC=scribe
 USER=scribe
 
+<<<<<<< HEAD:debian/scribe.init
 export CLASSPATH=/usr/lib/hadoop-0.20/hadoop-0.20.2+228-core.jar:/usr/share/java/commons-logging.jar
 
+=======
+>>>>>>> b88a7f610804428a28f2dde1fa3662ba00c2718a:debian/scribe.init
 test -x $DAEMON || exit 0
 
 LOGFILE=/var/log/scribe.log
