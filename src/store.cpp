@@ -191,8 +191,13 @@ void FileStoreBase::configure(pStoreConf configuration) {
   // a couple of suspicious things we warn about.
   std::string tmp;
   configuration->getString("file_path", baseFilePath);
+  configuration->getString("file_path_format", filePathFormat);
   configuration->getString("sub_directory", subDirectory);
   configuration->getString("use_hostname_sub_directory", tmp);
+
+  if (!filePathFormat.empty()) {
+    LOG_OPER("Configured path format as %s", filePathFormat.c_str());
+  }
 
   if (0 == tmp.compare("yes")) {
     setHostNameSubDir();
@@ -317,6 +322,7 @@ void FileStoreBase::copyCommon(const FileStoreBase *base) {
   baseSymlinkName = base->baseSymlinkName;
   writeStats = base->writeStats;
   rotateOnReopen = base->rotateOnReopen;
+  filePathFormat = base->filePathFormat;
 
   /*
    * append the category name to the base file path and change the
@@ -385,16 +391,69 @@ void FileStoreBase::rotateFile(time_t currentTime) {
 
 string FileStoreBase::makeFullFilename(int suffix, struct tm* creation_time,
                                        bool use_full_path) {
-
   ostringstream filename;
 
-  if (use_full_path) {
-    filename << filePath << '/';
-  }
-  filename << makeBaseFilename(creation_time);
-  filename << '_' << setw(5) << setfill('0') << suffix;
+  if (!filePathFormat.empty()) {
+    boost::filesystem::path path = buildFullPathWithFormat(creation_time);
+    if (use_full_path) {
+      filename << path.native_file_string();
+    } else {
+      filename << path.leaf();
+    }
+  } else {
+    if (use_full_path) {
+      filename << filePath << '/';
+    }
+    filename << makeBaseFilename(creation_time);
 
+  }
+  
+  filename << '_' << setw(5) << setfill('0') << suffix;
+  
   return filename.str();
+}
+
+boost::filesystem::path FileStoreBase::buildFullPathWithFormat(struct tm* creation_time) {
+  std::string path;
+  
+  bool isSubstituting = true;
+  typedef boost::tokenizer<boost::char_separator<char> > tokenizer;
+  boost::char_separator<char> sep("\%");
+  tokenizer tokens(filePathFormat, sep);
+  for (tokenizer::iterator it = tokens.begin(); it != tokens.end(); ++it) {
+    isSubstituting = !isSubstituting;
+    if (isSubstituting) {
+      path += valueForFormatKey(*it, creation_time);
+    } else {
+      path += *it;
+    }
+  }
+  
+  return boost::filesystem::path(path);
+}
+
+std::string FileStoreBase::valueForFormatKey(const std::string & aKey, struct tm* creation_time) {
+  ostringstream value;
+  
+  if (aKey == "year") {
+    value << creation_time->tm_year + 1900;
+  } else if (aKey == "month") {
+    value << setw(2) << setfill('0') << creation_time->tm_mon + 1;
+  } else if (aKey == "day") {
+    value << setw(2) << setfill('0') << creation_time->tm_mday;
+  } else if (aKey == "hour") {
+    value << setw(2) << setfill('0') << creation_time->tm_hour;
+  } else if (aKey == "minute") {
+    value << setw(2) << setfill('0') << creation_time->tm_min;
+  } else if (aKey == "hostname") {
+    return getHostname();
+  } else if (aKey == "category") {
+    return categoryHandled;
+  } else {
+    throw std::runtime_error("unknown file path format key");
+  }
+  
+  return value.str();
 }
 
 string FileStoreBase::makeBaseSymlink() {
@@ -544,6 +603,16 @@ void FileStoreBase::setHostNameSubDir() {
     LOG_OPER("[%s] %s", categoryHandled.c_str(), error_msg.c_str());
   }
 
+  string hoststring = getHostname();
+  if (hoststring.empty()) {
+    LOG_OPER("[%s] WARNING: could not get host name",
+             categoryHandled.c_str());
+  } else {
+    subDirectory = hoststring;
+  }
+}
+
+std::string FileStoreBase::getHostname() {
   char hostname[255];
   int error = gethostname(hostname, sizeof(hostname));
   if (error) {
@@ -551,14 +620,7 @@ void FileStoreBase::setHostNameSubDir() {
              categoryHandled.c_str(), error);
   }
 
-  string hoststring(hostname);
-
-  if (hoststring.empty()) {
-    LOG_OPER("[%s] WARNING: could not get host name",
-             categoryHandled.c_str());
-  } else {
-    subDirectory = hoststring;
-  }
+  return hostname;
 }
 
 FileStore::FileStore(StoreQueue* storeq,
@@ -656,14 +718,19 @@ bool FileStore::openInternal(bool incrementFilename, struct tm* current_time) {
       setStatus("file open error");
       return false;
     }
+    
+    if (!filePathFormat.empty()) {
+      boost::filesystem::path fullPath = buildFullPathWithFormat(current_time);
+      success = recursivelyCreateDirectories(fullPath.branch_path());
+    } else {
+      success = writeFile->createDirectory(baseFilePath);
 
-    success = writeFile->createDirectory(baseFilePath);
-
-    // If we created a subdirectory, we need to create two directories
-    if (success && !subDirectory.empty()) {
-      success = writeFile->createDirectory(filePath);
+      // If we created a subdirectory, we need to create two directories
+      if (success && !subDirectory.empty()) {
+        success = writeFile->createDirectory(filePath);
+      }
     }
-
+    
     if (!success) {
       LOG_OPER("[%s] Failed to create directory for file <%s>",
                categoryHandled.c_str(), file.c_str());
@@ -710,6 +777,16 @@ bool FileStore::openInternal(bool incrementFilename, struct tm* current_time) {
     return false;
   }
   return success;
+}
+
+bool FileStore::recursivelyCreateDirectories(boost::filesystem::path path) {
+  // First create branch, by calling ourself recursively
+  if (!path.empty()) {
+    recursivelyCreateDirectories(path.parent_path());
+  }
+  
+  // Now that parent's path exists, create the directory
+  return writeFile->createDirectory(path.native_directory_string());
 }
 
 bool FileStore::isOpen() {
