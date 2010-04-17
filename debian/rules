@@ -29,7 +29,7 @@ LIBS=-lhdfs -ljvm
 
 config.status:
 	dh_testdir
-	LIBS="$(LIBS)" CFLAGS="$(CFLAGS)" LDFLAGS="$(LDFLAGS)" CPPFLAGS="$(CPPFLAGS)" ./bootstrap.sh --with-fb303path=/usr --with-hadooppath=/usr --enable-hdfs --with-thriftpath=/usr --with-boost=/usr --prefix=/usr/ 
+	CFLAGS="$(CFLAGS)" LDFLAGS="$(LDFLAGS)" CPPFLAGS="$(CPPFLAGS)" ./bootstrap.sh --with-fb303path=/usr --with-hadooppath=/usr --enable-hdfs --with-thriftpath=/usr --with-boost=/usr --prefix=/usr
 build: build-stamp
 
 build-stamp:  config.status 
