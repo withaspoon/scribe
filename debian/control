@@ -8,7 +8,7 @@ Homepage: http://github.com/facebook/scribe
 
 Package: scribe
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}, ${python:Depends}, thrift (= 20080411-r930898-6), thrift-fb303 (= 20080411-r930898-3), sun-java6-jdk (>= 6), python (>= 2.6.4)
+Depends: ${shlibs:Depends}, ${misc:Depends}, ${python:Depends}, thrift (= 20080411-r930898-6), thrift-fb303 (= 20080411-r930898-3), sun-java6-jdk (>= 6), python (>= 2.6.4), libcommons-logging-java (>= 1.1.1)
 Description: Aggregating server for streamed log data 
  Scribe is a server for aggregating log data streamed in real time from a large
  number of servers. It is designed to be scalable, extensible without client-side 
