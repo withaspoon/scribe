@@ -23,11 +23,16 @@
 // @author Anthony Giardullo
 // @author Jan Oravec
 // @author John Song
+// @author Johan Stille
+// @author Björn Sperber
+// @author Wouter de Bie
 
 #include <algorithm>
 #include "common.h"
 #include "scribe_server.h"
 #include "thrift/transport/TSimpleFileTransport.h"
+#include "file_path_policy_factory.h"
+#include "hostname.h"
 
 using namespace std;
 using namespace boost;
@@ -159,10 +164,6 @@ FileStoreBase::FileStoreBase(StoreQueue* storeq,
                              const string& category,
                              const string &type, bool multi_category)
   : Store(storeq, category, type, multi_category),
-    baseFilePath("/tmp"),
-    subDirectory(""),
-    filePath("/tmp"),
-    baseFileName(category),
     baseSymlinkName(""),
     maxSize(DEFAULT_FILESTORE_MAX_SIZE),
     maxWriteSize(DEFAULT_FILESTORE_MAX_WRITE_SIZE),
@@ -189,32 +190,20 @@ void FileStoreBase::configure(pStoreConf configuration) {
 
   // We can run using defaults for all of these, but there are
   // a couple of suspicious things we warn about.
-  std::string tmp;
-  configuration->getString("file_path", baseFilePath);
-  configuration->getString("file_path_format", filePathFormat);
+  std::string useHostnameAsSubdirectory, subDirectory, filePath = "/tmp", tmp;
+  
+  configuration->getString("file_path", filePath);
+  configuration->getString("use_hostname_sub_directory", useHostnameAsSubdirectory);
   configuration->getString("sub_directory", subDirectory);
-  configuration->getString("use_hostname_sub_directory", tmp);
-
-  if (!filePathFormat.empty()) {
-    LOG_OPER("Configured path format as %s", filePathFormat.c_str());
+  
+  if (useHostnameAsSubdirectory == "yes") {
+    if (!subDirectory.empty()) {
+      std::string error_msg = "WARNING: Bad config - use_hostname_sub_directory will override sub_directory path";
+      LOG_OPER("[%s] %s", categoryHandled.c_str(), error_msg.c_str());
+    }
+    subDirectory = Hostname::getHostname();
   }
-
-  if (0 == tmp.compare("yes")) {
-    setHostNameSubDir();
-  }
-
-  filePath = baseFilePath;
-  if (!subDirectory.empty()) {
-    filePath += "/" + subDirectory;
-  }
-
-
-  if (!configuration->getString("base_filename", baseFileName)) {
-    LOG_OPER(
-        "[%s] WARNING: Bad config - no base_filename specified for file store",
-        categoryHandled.c_str());
-  }
-
+  
   // check if symlink name is optionally specified
   configuration->getString("base_symlink_name", baseSymlinkName);
 
@@ -261,6 +250,10 @@ void FileStoreBase::configure(pStoreConf configuration) {
       }
     }
   }
+  
+  filePathPolicy = FilePathPolicyFactory::createFilePathPolicy(filePath,
+                                                               subDirectory,
+                                                               rollPeriod != ROLL_NEVER);
 
   if (configuration->getString("write_meta", tmp)) {
     if (0 == tmp.compare("yes")) {
@@ -307,7 +300,6 @@ void FileStoreBase::configure(pStoreConf configuration) {
 }
 
 void FileStoreBase::copyCommon(const FileStoreBase *base) {
-  subDirectory = base->subDirectory;
   chunkSize = base->chunkSize;
   maxSize = base->maxSize;
   maxWriteSize = base->maxWriteSize;
@@ -322,20 +314,7 @@ void FileStoreBase::copyCommon(const FileStoreBase *base) {
   baseSymlinkName = base->baseSymlinkName;
   writeStats = base->writeStats;
   rotateOnReopen = base->rotateOnReopen;
-  filePathFormat = base->filePathFormat;
-
-  /*
-   * append the category name to the base file path and change the
-   * baseFileName to the category name. these are arbitrary, could be anything
-   * unique
-   */
-  baseFilePath = base->baseFilePath + std::string("/") + categoryHandled;
-  filePath = baseFilePath;
-  if (!subDirectory.empty()) {
-    filePath += "/" + subDirectory;
-  }
-
-  baseFileName = categoryHandled;
+  filePathPolicy = base->filePathPolicy;
 }
 
 bool FileStoreBase::open() {
@@ -383,77 +362,37 @@ void FileStoreBase::rotateFile(time_t currentTime) {
 
   LOG_OPER("[%s] %d:%d rotating file <%s> old size <%lu> max size <%lu>",
            categoryHandled.c_str(), timeinfo.tm_hour, timeinfo.tm_min,
-           makeBaseFilename(&timeinfo).c_str(), currentSize, maxSize);
+           makeFilename(&timeinfo).c_str(), currentSize, maxSize);
 
-  printStats();
+  printStats(&timeinfo);
   openInternal(true, &timeinfo);
 }
 
-string FileStoreBase::makeFullFilename(int suffix, struct tm* creation_time,
-                                       bool use_full_path) {
+string FileStoreBase::makeFilepathWithSuffix(int suffix, struct tm* creation_time) {
+  return addSuffix(suffix, makeFilepath(creation_time));
+}
+
+string FileStoreBase::makeFilepath(struct tm* creation_time) {
+  return filePathPolicy->fullPath(creation_time, categoryHandled);
+}
+
+string FileStoreBase::makeFilenameWithSuffix(int suffix, struct tm* creation_time) {
+  return addSuffix(suffix, makeFilename(creation_time));
+}
+
+string FileStoreBase::makeFilename(struct tm* creation_time) {
+  return filePathPolicy->fileName(creation_time, categoryHandled);
+}
+
+string FileStoreBase::makeDirectoryPath(struct tm* creation_time) {
+  return filePathPolicy->directoryPath(creation_time, categoryHandled);
+}
+
+std::string FileStoreBase::addSuffix(int suffix, const std::string & path) {
   ostringstream filename;
-
-  if (!filePathFormat.empty()) {
-    boost::filesystem::path path = buildFullPathWithFormat(creation_time);
-    if (use_full_path) {
-      filename << path.native_file_string();
-    } else {
-      filename << path.leaf();
-    }
-  } else {
-    if (use_full_path) {
-      filename << filePath << '/';
-    }
-    filename << makeBaseFilename(creation_time);
-
-  }
-  
+  filename << path;
   filename << '_' << setw(5) << setfill('0') << suffix;
-  
   return filename.str();
-}
-
-boost::filesystem::path FileStoreBase::buildFullPathWithFormat(struct tm* creation_time) {
-  std::string path;
-  
-  bool isSubstituting = true;
-  typedef boost::tokenizer<boost::char_separator<char> > tokenizer;
-  boost::char_separator<char> sep("\%");
-  tokenizer tokens(filePathFormat, sep);
-  for (tokenizer::iterator it = tokens.begin(); it != tokens.end(); ++it) {
-    isSubstituting = !isSubstituting;
-    if (isSubstituting) {
-      path += valueForFormatKey(*it, creation_time);
-    } else {
-      path += *it;
-    }
-  }
-  
-  return boost::filesystem::path(path);
-}
-
-std::string FileStoreBase::valueForFormatKey(const std::string & aKey, struct tm* creation_time) {
-  ostringstream value;
-  
-  if (aKey == "year") {
-    value << creation_time->tm_year + 1900;
-  } else if (aKey == "month") {
-    value << setw(2) << setfill('0') << creation_time->tm_mon + 1;
-  } else if (aKey == "day") {
-    value << setw(2) << setfill('0') << creation_time->tm_mday;
-  } else if (aKey == "hour") {
-    value << setw(2) << setfill('0') << creation_time->tm_hour;
-  } else if (aKey == "minute") {
-    value << setw(2) << setfill('0') << creation_time->tm_min;
-  } else if (aKey == "hostname") {
-    return getHostname();
-  } else if (aKey == "category") {
-    return categoryHandled;
-  } else {
-    throw std::runtime_error("unknown file path format key");
-  }
-  
-  return value.str();
 }
 
 string FileStoreBase::makeBaseSymlink() {
@@ -461,66 +400,41 @@ string FileStoreBase::makeBaseSymlink() {
   if (!baseSymlinkName.empty()) {
     base << baseSymlinkName << "_current";
   } else {
-    base << baseFileName << "_current";
+    base << categoryHandled << "_current";
   }
   return base.str();
 }
 
-string FileStoreBase::makeFullSymlink() {
+string FileStoreBase::makeFullSymlink(struct tm* current_time) {
   ostringstream filename;
-  filename << filePath << '/' << makeBaseSymlink();
-  return filename.str();
-}
-
-string FileStoreBase::makeBaseFilename(struct tm* creation_time) {
-  ostringstream filename;
-
-  filename << baseFileName;
-  if (rollPeriod != ROLL_NEVER) {
-    filename << '-' << creation_time->tm_year + 1900  << '-'
-             << setw(2) << setfill('0') << creation_time->tm_mon + 1 << '-'
-             << setw(2) << setfill('0')  << creation_time->tm_mday;
-
-  }
+  filename << makeDirectoryPath(current_time) << '/' << makeBaseSymlink();
   return filename.str();
 }
 
 // returns the suffix of the newest file matching base_filename
-int FileStoreBase::findNewestFile(const string& base_filename) {
-
-  std::vector<std::string> files = FileInterface::list(filePath, fsType);
-
-  int max_suffix = -1;
-  std::string retval;
-  for (std::vector<std::string>::iterator iter = files.begin();
-       iter != files.end();
-       ++iter) {
-
-    int suffix = getFileSuffix(*iter, base_filename);
-    if (suffix > max_suffix) {
-      max_suffix = suffix;
-    }
-  }
-  return max_suffix;
+int FileStoreBase::findNewestFile(const std::string & filePathToFind) {
+  std::vector<int> suffices = findFileSuffices(filePathToFind);
+  std::vector<int>::iterator it = std::max_element(suffices.begin(), suffices.end());
+  return it == suffices.end() ? -1 : *it;
 }
 
-int FileStoreBase::findOldestFile(const string& base_filename) {
+int FileStoreBase::findOldestFile(const std::string & filePathToFind) {
+  std::vector<int> suffices = findFileSuffices(filePathToFind);
+  std::vector<int>::iterator it = std::min_element(suffices.begin(), suffices.end());
+  return it == suffices.end() ? -1 : *it;
+}
 
-  std::vector<std::string> files = FileInterface::list(filePath, fsType);
-
-  int min_suffix = -1;
-  std::string retval;
-  for (std::vector<std::string>::iterator iter = files.begin();
-       iter != files.end();
-       ++iter) {
-
-    int suffix = getFileSuffix(*iter, base_filename);
-    if (suffix >= 0 &&
-        (min_suffix == -1 || suffix < min_suffix)) {
-      min_suffix = suffix;
-    }
+std::vector<int> FileStoreBase::findFileSuffices(const std::string & filePathToFind) {
+  std::string directoryPath = boost::filesystem::path(filePathToFind).branch_path().native_file_string();
+  std::string baseFileName = boost::filesystem::path(filePathToFind).leaf();
+  std::vector<std::string> files = FileInterface::list(directoryPath, fsType);
+  
+  std::vector<int> suffices;
+  for (std::vector<std::string>::iterator it = files.begin(); it != files.end(); ++it) {
+    suffices.push_back(getFileSuffix(*it, baseFileName));
   }
-  return min_suffix;
+  
+  return suffices;
 }
 
 int FileStoreBase::getFileSuffix(const string& filename,
@@ -540,18 +454,17 @@ int FileStoreBase::getFileSuffix(const string& filename,
   return suffix;
 }
 
-void FileStoreBase::printStats() {
+void FileStoreBase::printStats(struct tm* timestamp) {
   if (!writeStats) {
     return;
   }
 
-  string filename(filePath);
-  filename += "/scribe_stats";
+  string filename = makeDirectoryPath(timestamp) + "/scribe_stats";
 
   boost::shared_ptr<FileInterface> stats_file =
       FileInterface::createFileInterface(fsType, filename);
   if (!stats_file ||
-      !stats_file->createDirectory(filePath) ||
+      !stats_file->createDirectory(makeDirectoryPath(timestamp)) ||
       !stats_file->openWrite()) {
     LOG_OPER("[%s] Failed to open stats file <%s> of type <%s> for writing",
              categoryHandled.c_str(), filename.c_str(), fsType.c_str());
@@ -593,34 +506,6 @@ unsigned long FileStoreBase::bytesToPad(unsigned long next_message_length,
   }
   // chunk_size <= 0 means don't do any chunking
   return 0;
-}
-
-// set subDirectory to the name of this machine
-void FileStoreBase::setHostNameSubDir() {
-  if (!subDirectory.empty()) {
-    string error_msg = "WARNING: Bad config - ";
-    error_msg += "use_hostname_sub_directory will override sub_directory path";
-    LOG_OPER("[%s] %s", categoryHandled.c_str(), error_msg.c_str());
-  }
-
-  string hoststring = getHostname();
-  if (hoststring.empty()) {
-    LOG_OPER("[%s] WARNING: could not get host name",
-             categoryHandled.c_str());
-  } else {
-    subDirectory = hoststring;
-  }
-}
-
-std::string FileStoreBase::getHostname() {
-  char hostname[255];
-  int error = gethostname(hostname, sizeof(hostname));
-  if (error) {
-    LOG_OPER("[%s] WARNING: gethostname returned error: %d ",
-             categoryHandled.c_str(), error);
-  }
-
-  return hostname;
 }
 
 FileStore::FileStore(StoreQueue* storeq,
@@ -677,7 +562,7 @@ bool FileStore::openInternal(bool incrementFilename, struct tm* current_time) {
   }
 
   try {
-    int suffix = findNewestFile(makeBaseFilename(current_time));
+    int suffix = findNewestFile(makeFilepath(current_time));
 
     if (incrementFilename) {
       ++suffix;
@@ -688,7 +573,7 @@ bool FileStore::openInternal(bool incrementFilename, struct tm* current_time) {
       suffix = 0;
     }
 
-    string file = makeFullFilename(suffix, current_time);
+    string file = makeFilepathWithSuffix(suffix, current_time);
 
     switch (rollPeriod) {
       case ROLL_DAILY:
@@ -719,17 +604,7 @@ bool FileStore::openInternal(bool incrementFilename, struct tm* current_time) {
       return false;
     }
     
-    if (!filePathFormat.empty()) {
-      boost::filesystem::path fullPath = buildFullPathWithFormat(current_time);
-      success = recursivelyCreateDirectories(fullPath.branch_path());
-    } else {
-      success = writeFile->createDirectory(baseFilePath);
-
-      // If we created a subdirectory, we need to create two directories
-      if (success && !subDirectory.empty()) {
-        success = writeFile->createDirectory(filePath);
-      }
-    }
+    success = writeFile->createDirectory(getFilePathPolicy()->fullPath(current_time, categoryHandled));
     
     if (!success) {
       LOG_OPER("[%s] Failed to create directory for file <%s>",
@@ -750,11 +625,11 @@ bool FileStore::openInternal(bool incrementFilename, struct tm* current_time) {
 
       /* just make a best effort here, and don't error if it fails */
       if (createSymlink && !isBufferFile) {
-        string symlinkName = makeFullSymlink();
+        string symlinkName = makeFullSymlink(current_time);
         boost::shared_ptr<FileInterface> tmp =
           FileInterface::createFileInterface(fsType, symlinkName, isBufferFile);
         tmp->deleteFile();
-        string symtarget = makeFullFilename(suffix, current_time, false);
+        string symtarget = makeFilenameWithSuffix(suffix, current_time);
         writeFile->createSymlink(symtarget, symlinkName);
       }
       // else it confuses the filename code on reads
@@ -777,16 +652,6 @@ bool FileStore::openInternal(bool incrementFilename, struct tm* current_time) {
     return false;
   }
   return success;
-}
-
-bool FileStore::recursivelyCreateDirectories(boost::filesystem::path path) {
-  // First create branch, by calling ourself recursively
-  if (!path.empty()) {
-    recursivelyCreateDirectories(path.parent_path());
-  }
-  
-  // Now that parent's path exists, create the directory
-  return writeFile->createDirectory(path.native_directory_string());
 }
 
 bool FileStore::isOpen() {
@@ -951,26 +816,26 @@ bool FileStore::writeMessages(boost::shared_ptr<logentry_vector_t> messages,
 // currently gets invoked from within a bufferstore
 void FileStore::deleteOldest(struct tm* now) {
 
-  int index = findOldestFile(makeBaseFilename(now));
+  int index = findOldestFile(makeFilepath(now));
   if (index < 0) {
     return;
   }
   shared_ptr<FileInterface> deletefile = FileInterface::createFileInterface(fsType,
-                                            makeFullFilename(index, now));
+                                            makeFilepathWithSuffix(index, now));
   deletefile->deleteFile();
 }
 
 // Replace the messages in the oldest file at this timestamp with the input messages
 bool FileStore::replaceOldest(boost::shared_ptr<logentry_vector_t> messages,
                               struct tm* now) {
-  string base_name = makeBaseFilename(now);
-  int index = findOldestFile(base_name);
+  string filepathToFind = makeFilepath(now);
+  int index = findOldestFile(filepathToFind);
   if (index < 0) {
-    LOG_OPER("[%s] Could not find files <%s>", categoryHandled.c_str(), base_name.c_str());
+    LOG_OPER("[%s] Could not find files <%s>", categoryHandled.c_str(), filepathToFind.c_str());
     return false;
   }
 
-  string filename = makeFullFilename(index, now);
+  string filename = makeFilepathWithSuffix(index, now);
 
   // Need to close and reopen store in case we already have this file open
   close();
@@ -999,13 +864,13 @@ bool FileStore::replaceOldest(boost::shared_ptr<logentry_vector_t> messages,
 bool FileStore::readOldest(/*out*/ boost::shared_ptr<logentry_vector_t> messages,
                            struct tm* now) {
 
-  int index = findOldestFile(makeBaseFilename(now));
+  int index = findOldestFile(makeFilepath(now));
   if (index < 0) {
     // This isn't an error. It's legit to call readOldest when there aren't any
     // files left, in which case the call succeeds but returns messages empty.
     return true;
   }
-  std::string filename = makeFullFilename(index, now);
+  std::string filename = makeFilepathWithSuffix(index, now);
 
   shared_ptr<FileInterface> infile = FileInterface::createFileInterface(fsType,
                                               filename, isBufferFile);
@@ -1051,15 +916,15 @@ bool FileStore::readOldest(/*out*/ boost::shared_ptr<logentry_vector_t> messages
 
 bool FileStore::empty(struct tm* now) {
 
-  std::vector<std::string> files = FileInterface::list(filePath, fsType);
+  std::vector<std::string> files = FileInterface::list(makeDirectoryPath(now), fsType);
 
-  std::string base_filename = makeBaseFilename(now);
+  std::string base_filename = makeFilename(now);
   for (std::vector<std::string>::iterator iter = files.begin();
        iter != files.end();
        ++iter) {
     int suffix =  getFileSuffix(*iter, base_filename);
     if (-1 != suffix) {
-      std::string fullname = makeFullFilename(suffix, now);
+      std::string fullname = makeFilepathWithSuffix(suffix, now);
       shared_ptr<FileInterface> file = FileInterface::createFileInterface(fsType,
                                                                       fullname);
       if (file->fileSize()) {
@@ -1167,7 +1032,7 @@ bool ThriftFileStore::openInternal(bool incrementFilename, struct tm* current_ti
     current_time = &timeinfo;
   }
 
-  int suffix = findNewestFile(makeBaseFilename(current_time));
+  int suffix = findNewestFile(makeFilepath(current_time));
 
   if (incrementFilename) {
     ++suffix;
@@ -1178,9 +1043,9 @@ bool ThriftFileStore::openInternal(bool incrementFilename, struct tm* current_ti
     suffix = 0;
   }
 
-  string filename = makeFullFilename(suffix, current_time);
+  string filename = makeFilepathWithSuffix(suffix, current_time);
   /* try to create the directory containing the file */
-  if (!createFileDirectory()) {
+  if (!createFileDirectory(current_time)) {
     LOG_OPER("[%s] Could not create path for file: %s",
              categoryHandled.c_str(), filename.c_str());
     return false;
@@ -1240,21 +1105,21 @@ bool ThriftFileStore::openInternal(bool incrementFilename, struct tm* current_ti
 
   /* just make a best effort here, and don't error if it fails */
   if (createSymlink) {
-    string symlinkName = makeFullSymlink();
+    string symlinkName = makeFullSymlink(current_time);
     unlink(symlinkName.c_str());
-    string symtarget = makeFullFilename(suffix, current_time, false);
+    string symtarget = makeFilenameWithSuffix(suffix, current_time);
     symlink(symtarget.c_str(), symlinkName.c_str());
   }
 
   return true;
 }
 
-bool ThriftFileStore::createFileDirectory () {
+bool ThriftFileStore::createFileDirectory(struct tm* timestamp) {
   try {
-    boost::filesystem::create_directories(filePath);
+    boost::filesystem::create_directories(makeDirectoryPath(timestamp));
   }catch(std::exception const& e) {
     LOG_OPER("Exception < %s > in ThriftFileStore::createFileDirectory for path %s",
-      e.what(),filePath.c_str());
+      e.what(),makeDirectoryPath(timestamp).c_str());
     return false;
   }
   return true;
