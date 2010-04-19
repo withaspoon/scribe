@@ -23,6 +23,9 @@
 // @author Anthony Giardullo
 // @author Jan Oravec
 // @author John Song
+// @author Johan Stille
+// @author Björn Sperber
+// @author Wouter de Bie
 
 #ifndef SCRIBE_STORE_H
 #define SCRIBE_STORE_H
@@ -32,6 +35,7 @@
 #include "file.h"
 #include "conn_pool.h"
 #include "store_queue.h"
+#include "file_path_policy.h"
 
 class StoreQueue;
 
@@ -127,7 +131,7 @@ class FileStoreBase : public Store {
 
   // appends information about the current file to a log file in the same
   // directory
-  virtual void printStats();
+  virtual void printStats(struct tm* time);
 
   // Returns the number of bytes to pad to align to the specified block size
   unsigned long bytesToPad(unsigned long next_message_length,
@@ -135,26 +139,25 @@ class FileStoreBase : public Store {
                            unsigned long chunk_size);
 
   // A full filename includes an absolute path and a sequence number suffix.
-  std::string makeBaseFilename(struct tm* creation_time);
-  std::string makeFullFilename(int suffix, struct tm* creation_time,
-                               bool use_full_path = true);
+  std::string makeFilepathWithSuffix(int suffix, struct tm* creation_time);
+  std::string makeFilepath(struct tm* creation_time);
+  std::string makeFilenameWithSuffix(int suffix, struct tm* creation_time);
+  std::string makeFilename(struct tm* creation_time);
+  std::string makeDirectoryPath(struct tm* creation_time);
+  
   boost::filesystem::path buildFullPathWithFormat(struct tm* creation_time);
   std::string valueForFormatKey(const std::string & aKey, struct tm* creation_time);
   std::string makeBaseSymlink();
-  std::string makeFullSymlink();
+  std::string makeFullSymlink(struct tm* current_time);
   int  findOldestFile(const std::string& base_filename);
   int  findNewestFile(const std::string& base_filename);
   int  getFileSuffix(const std::string& filename,
                      const std::string& base_filename);
   void setHostNameSubDir();
   std::string getHostname();
+  boost::shared_ptr<FilePathPolicy> getFilePathPolicy() const { return filePathPolicy; };
 
   // Configuration
-  std::string baseFilePath;
-  std::string filePathFormat;
-  std::string subDirectory;
-  std::string filePath;
-  std::string baseFileName;
   std::string baseSymlinkName;
   unsigned long maxSize;
   unsigned long maxWriteSize;
@@ -181,6 +184,11 @@ class FileStoreBase : public Store {
                                // necessarily the number of lines in the file
 
  private:
+  boost::shared_ptr<FilePathPolicy> filePathPolicy;
+  
+  std::string addSuffix(int suffix, const std::string & path);
+  std::vector<int> findFileSuffices(const std::string & filePathToFind);
+   
   // disallow copy, assignment, and empty construction
   FileStoreBase(FileStoreBase& rhs);
   FileStoreBase& operator=(FileStoreBase& rhs);
@@ -203,7 +211,6 @@ class FileStore : public FileStoreBase {
   void configure(pStoreConf configuration);
   void close();
   void flush();
-  bool recursivelyCreateDirectories(boost::filesystem::path path);
 
   // Each read does its own open and close and gets the whole file.
   // This is separate from the write file, and not really a consistent
@@ -251,7 +258,7 @@ class ThriftFileStore : public FileStoreBase {
   void configure(pStoreConf configuration);
   void close();
   void flush();
-  bool createFileDirectory();
+  bool createFileDirectory(struct tm* time);
 
  protected:
   // Implement FileStoreBase virtual function

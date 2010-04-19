@@ -94,7 +94,7 @@ endif
 
 # Binaries -- multiple progs can be defined.
 bin_PROGRAMS = scribed
-scribed_SOURCES = store.cpp store_queue.cpp conf.cpp file.cpp conn_pool.cpp scribe_server.cpp $(FB_SOURCES)
+scribed_SOURCES = store.cpp store_queue.cpp conf.cpp file.cpp conn_pool.cpp scribe_server.cpp static_file_path_policy.cpp dynamic_file_path_policy.cpp file_path_policy_factory.cpp timestamped_file_path_policy.cpp hostname.cpp $(FB_SOURCES)
 if USE_SCRIBE_HDFS
   scribed_SOURCES += HdfsFile.cpp
 endif
