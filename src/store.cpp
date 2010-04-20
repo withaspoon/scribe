@@ -412,26 +412,24 @@ string FileStoreBase::makeFullSymlink(struct tm* current_time) {
 }
 
 // returns the suffix of the newest file matching base_filename
-int FileStoreBase::findNewestFile(const std::string & filePathToFind) {
-  std::vector<int> suffices = findFileSuffices(filePathToFind);
+int FileStoreBase::findNewestFile(const std::string & directoryPath, const std::string & fileNameToFind) {
+  std::vector<int> suffices = findFileSuffices(directoryPath, fileNameToFind);
   std::vector<int>::iterator it = std::max_element(suffices.begin(), suffices.end());
   return it == suffices.end() ? -1 : *it;
 }
 
-int FileStoreBase::findOldestFile(const std::string & filePathToFind) {
-  std::vector<int> suffices = findFileSuffices(filePathToFind);
+int FileStoreBase::findOldestFile(const std::string & directoryPath, const std::string & fileNameToFind) {
+  std::vector<int> suffices = findFileSuffices(directoryPath, fileNameToFind);
   std::vector<int>::iterator it = std::min_element(suffices.begin(), suffices.end());
   return it == suffices.end() ? -1 : *it;
 }
 
-std::vector<int> FileStoreBase::findFileSuffices(const std::string & filePathToFind) {
-  std::string directoryPath = boost::filesystem::path(filePathToFind).branch_path().native_file_string();
-  std::string baseFileName = boost::filesystem::path(filePathToFind).leaf();
+std::vector<int> FileStoreBase::findFileSuffices(const std::string & directoryPath, const std::string & fileNameToFind) {
   std::vector<std::string> files = FileInterface::list(directoryPath, fsType);
   
   std::vector<int> suffices;
   for (std::vector<std::string>::iterator it = files.begin(); it != files.end(); ++it) {
-    suffices.push_back(getFileSuffix(*it, baseFileName));
+    suffices.push_back(getFileSuffix(*it, fileNameToFind));
   }
   
   return suffices;
@@ -562,7 +560,7 @@ bool FileStore::openInternal(bool incrementFilename, struct tm* current_time) {
   }
 
   try {
-    int suffix = findNewestFile(makeFilepath(current_time));
+    int suffix = findNewestFile(makeDirectoryPath(current_time), makeFilename(current_time));
 
     if (incrementFilename) {
       ++suffix;
@@ -604,7 +602,7 @@ bool FileStore::openInternal(bool incrementFilename, struct tm* current_time) {
       return false;
     }
     
-    success = writeFile->createDirectory(getFilePathPolicy()->fullPath(current_time, categoryHandled));
+    success = writeFile->createDirectory(makeDirectoryPath(current_time));
     
     if (!success) {
       LOG_OPER("[%s] Failed to create directory for file <%s>",
@@ -816,7 +814,7 @@ bool FileStore::writeMessages(boost::shared_ptr<logentry_vector_t> messages,
 // currently gets invoked from within a bufferstore
 void FileStore::deleteOldest(struct tm* now) {
 
-  int index = findOldestFile(makeFilepath(now));
+  int index = findOldestFile(makeDirectoryPath(now), makeFilename(now));
   if (index < 0) {
     return;
   }
@@ -828,10 +826,10 @@ void FileStore::deleteOldest(struct tm* now) {
 // Replace the messages in the oldest file at this timestamp with the input messages
 bool FileStore::replaceOldest(boost::shared_ptr<logentry_vector_t> messages,
                               struct tm* now) {
-  string filepathToFind = makeFilepath(now);
-  int index = findOldestFile(filepathToFind);
+  string filenameToFind = makeFilename(now);
+  int index = findOldestFile(makeDirectoryPath(now), filenameToFind);
   if (index < 0) {
-    LOG_OPER("[%s] Could not find files <%s>", categoryHandled.c_str(), filepathToFind.c_str());
+    LOG_OPER("[%s] Could not find files <%s>", categoryHandled.c_str(), filenameToFind.c_str());
     return false;
   }
 
@@ -864,7 +862,7 @@ bool FileStore::replaceOldest(boost::shared_ptr<logentry_vector_t> messages,
 bool FileStore::readOldest(/*out*/ boost::shared_ptr<logentry_vector_t> messages,
                            struct tm* now) {
 
-  int index = findOldestFile(makeFilepath(now));
+  int index = findOldestFile(makeDirectoryPath(now), makeFilename(now));
   if (index < 0) {
     // This isn't an error. It's legit to call readOldest when there aren't any
     // files left, in which case the call succeeds but returns messages empty.
@@ -1032,7 +1030,7 @@ bool ThriftFileStore::openInternal(bool incrementFilename, struct tm* current_ti
     current_time = &timeinfo;
   }
 
-  int suffix = findNewestFile(makeFilepath(current_time));
+  int suffix = findNewestFile(makeDirectoryPath(current_time), makeFilename(current_time));
 
   if (incrementFilename) {
     ++suffix;
