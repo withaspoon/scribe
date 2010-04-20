@@ -149,10 +149,10 @@ class FileStoreBase : public Store {
   std::string valueForFormatKey(const std::string & aKey, struct tm* creation_time);
   std::string makeBaseSymlink();
   std::string makeFullSymlink(struct tm* current_time);
-  int  findOldestFile(const std::string& base_filename);
-  int  findNewestFile(const std::string& base_filename);
-  int  getFileSuffix(const std::string& filename,
-                     const std::string& base_filename);
+  int findNewestFile(const std::string & directoryPath, const std::string & fileNameToFind);
+  int findOldestFile(const std::string & directoryPath, const std::string & fileNameToFind);
+  int getFileSuffix(const std::string& filename,
+                    const std::string& base_filename);
   void setHostNameSubDir();
   std::string getHostname();
   boost::shared_ptr<FilePathPolicy> getFilePathPolicy() const { return filePathPolicy; };
@@ -187,7 +187,8 @@ class FileStoreBase : public Store {
   boost::shared_ptr<FilePathPolicy> filePathPolicy;
   
   std::string addSuffix(int suffix, const std::string & path);
-  std::vector<int> findFileSuffices(const std::string & filePathToFind);
+  std::vector<int> findFileSuffices(const std::string & directoryPath, const std::string & fileNameToFind);
+  
    
   // disallow copy, assignment, and empty construction
   FileStoreBase(FileStoreBase& rhs);
